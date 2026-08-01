@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>FocusGuard — AI Study Monitor</title>
+<meta name="description" content="FocusGuard watches for phone use and prolonged eye closure while you study, entirely in your browser." />
+<link rel="manifest" href="manifest.json" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css" />
+
+<!-- TensorFlow.js + COCO-SSD for phone detection -->
+<script defer src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+
+<!-- MediaPipe Face Landmarker (Tasks Vision) for eye-closure detection -->
+<script type="module">
+  window.__mpVisionModulePromise = import("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs");
+</script>
+</head>
+<body>
+
+<!-- ===================== LOADING SCREEN ===================== -->
+<div id="loadingScreen" class="loading-screen">
+  <div class="loading-iris" aria-hidden="true">
+    <svg viewBox="0 0 120 120">
+      <circle class="iris-track" cx="60" cy="60" r="52"></circle>
+      <circle class="iris-sweep" cx="60" cy="60" r="52"></circle>
+    </svg>
+  </div>
+  <h1 class="loading-title">Preparing FocusGuard AI…</h1>
+  <p id="loadingStatus" class="loading-status">Starting up</p>
+  <ul id="loadingSteps" class="loading-steps">
+    <li data-step="tf">TensorFlow.js runtime</li>
+    <li data-step="coco">Phone-detection model</li>
+    <li data-step="face">Eye-closure model</li>
+  </ul>
+  <button id="btnSkipStep" class="btn btn-secondary loading-skip hidden" type="button">This is taking a while — skip it</button>
+  <p id="loadingError" class="loading-error hidden"></p>
+</div>
+
+<!-- ===================== APP SHELL ===================== -->
+<div id="app" class="app hidden">
+
+  <!-- ---------- TOP BAR ---------- -->
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 32 32"><circle cx="16" cy="16" r="14" class="mark-ring"/><circle cx="16" cy="16" r="5" class="mark-pupil"/></svg>
+      </span>
+      <div class="brand-text">
+        <span class="brand-name">FocusGuard</span>
+        <span class="brand-sub">AI Study Monitor</span>
+      </div>
+    </div>
+
+    <div class="topbar-actions">
+      <button id="btnHistory" class="btn btn-ghost" type="button">History</button>
+      <button id="btnSettings" class="btn btn-ghost" type="button" aria-haspopup="dialog">
+        <svg viewBox="0 0 24 24" class="icon"><path d="M12 15.5a3.5 3.5 0 100-7 3.5 3.5 0 000 7z"/><path d="M19.4 13.5a1.7 1.7 0 00.34 1.87l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.7 1.7 0 00-1.87-.34 1.7 1.7 0 00-1 1.56V20a2 2 0 11-4 0v-.09a1.7 1.7 0 00-1-1.56 1.7 1.7 0 00-1.87.34l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.7 1.7 0 00.34-1.87 1.7 1.7 0 00-1.56-1H4a2 2 0 110-4h.09a1.7 1.7 0 001.56-1 1.7 1.7 0 00-.34-1.87l-.06-.06a2 2 0 112.83-2.83l.06.06a1.7 1.7 0 001.87.34H10a1.7 1.7 0 001-1.56V4a2 2 0 114 0v.09a1.7 1.7 0 001 1.56 1.7 1.7 0 001.87-.34l.06-.06a2 2 0 112.83 2.83l-.06.06a1.7 1.7 0 00-.34 1.87V10a1.7 1.7 0 001.56 1H20a2 2 0 110 4h-.09a1.7 1.7 0 00-1.56 1z"/></svg>
+        Settings
+      </button>
+    </div>
+  </header>
+
+  <!-- ---------- MAIN DASHBOARD ---------- -->
+  <main class="dashboard">
+
+    <!-- Camera + status column -->
+    <section class="panel camera-panel">
+      <div class="camera-frame">
+        <svg class="iris-ring" viewBox="0 0 400 400" aria-hidden="true">
+          <circle class="iris-ring-track" cx="200" cy="200" r="192"></circle>
+        </svg>
+        <div class="camera-inner">
+          <video id="cameraVideo" autoplay muted playsinline></video>
+          <canvas id="overlayCanvas"></canvas>
+
+          <div class="camera-placeholder" id="cameraPlaceholder">
+            <svg viewBox="0 0 48 48" class="icon-lg"><path d="M17 8a3 3 0 00-2.6 1.5L13 12H8a3 3 0 00-3 3v20a3 3 0 003 3h32a3 3 0 003-3V15a3 3 0 00-3-3h-5l-1.4-2.5A3 3 0 0031 8H17z"/><circle cx="24" cy="26" r="8"/></svg>
+            <p>Camera preview will appear here</p>
+          </div>
+
+          <div class="camera-tag live-tag" id="liveTag">
+            <span class="dot"></span> AI MONITORING <span class="dot-sep">·</span> <span id="liveText">OFF</span>
+          </div>
+
+          <div class="camera-tag corner-tag" id="cameraActiveTag">Camera Active</div>
+        </div>
+      </div>
+
+      <div class="status-row">
+        <div class="status-chip" id="statusChip">
+          <span id="statusIcon">⚪</span>
+          <span id="statusLabel">Idle</span>
+        </div>
+      </div>
+
+      <div class="controls-row">
+        <button id="btnStart" class="btn btn-primary btn-lg" type="button">
+          <svg viewBox="0 0 24 24" class="icon"><path d="M8 5v14l11-7z"/></svg>
+          Start Study
+        </button>
+        <button id="btnStop" class="btn btn-danger btn-lg hidden" type="button">
+          <svg viewBox="0 0 24 24" class="icon"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+          Stop Study
+        </button>
+      </div>
+
+      <p id="cameraError" class="inline-error hidden"></p>
+    </section>
+
+    <!-- Stats column -->
+    <section class="panel stats-panel">
+      <h2 class="panel-title">Session</h2>
+
+      <div class="stat-grid">
+        <div class="stat-card">
+          <span class="stat-label">Study Time</span>
+          <span class="stat-value mono" id="statStudyTime">00:00:00</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Focused Time</span>
+          <span class="stat-value mono" id="statFocusTime">00:00:00</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Focus Score<sup>*</sup></span>
+          <span class="stat-value mono" id="statFocusScore">—</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Total Alerts</span>
+          <span class="stat-value mono" id="statTotalAlerts">0</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Phone Alerts</span>
+          <span class="stat-value mono" id="statPhoneAlerts">0</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Sleep Alerts</span>
+          <span class="stat-value mono" id="statSleepAlerts">0</span>
+        </div>
+      </div>
+      <p class="stat-footnote">*Focus Score is an app estimate based on alerts and time, not a scientific or medical measurement.</p>
+
+      <div class="privacy-note">
+        <svg viewBox="0 0 24 24" class="icon"><path d="M12 2l8 4v6c0 5-3.4 9.4-8 10-4.6-.6-8-5-8-10V6l8-4z"/></svg>
+        <p>Your camera feed is processed locally in your browser and is not intentionally uploaded by FocusGuard. The alert video is a local file bundled with the app and is never fetched from a server.</p>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- ===================== SETTINGS DRAWER ===================== -->
+<div id="settingsOverlay" class="drawer-overlay hidden">
+  <aside class="drawer" role="dialog" aria-label="Settings" aria-modal="true">
+    <div class="drawer-header">
+      <h2>Settings</h2>
+      <button id="btnCloseSettings" class="btn btn-icon" type="button" aria-label="Close settings">✕</button>
+    </div>
+
+    <div class="drawer-body">
+
+      <section class="settings-group">
+        <h3>Phone Detection</h3>
+        <label class="switch-row">
+          <span>Enable phone detection</span>
+          <input type="checkbox" id="setPhoneEnabled" checked />
+        </label>
+        <label class="field-row">
+          <span>Detection confidence <output id="outPhoneConf">0.60</output></span>
+          <input type="range" id="setPhoneConf" min="0.3" max="0.9" step="0.05" value="0.6" />
+        </label>
+        <label class="field-row">
+          <span>Confirmation duration <output id="outPhoneDur">2.5s</output></span>
+          <input type="range" id="setPhoneDur" min="1" max="6" step="0.5" value="2.5" />
+        </label>
+      </section>
+
+      <section class="settings-group">
+        <h3>Sleep / Inactivity Detection</h3>
+        <label class="switch-row">
+          <span>Enable sleep detection</span>
+          <input type="checkbox" id="setSleepEnabled" checked />
+        </label>
+        <label class="field-row">
+          <span>Eye-closure duration <output id="outSleepDur">3.0s</output></span>
+          <input type="range" id="setSleepDur" min="1" max="8" step="0.5" value="3" />
+        </label>
+      </section>
+
+      <section class="settings-group">
+        <h3>Alert</h3>
+        <label class="field-row">
+          <span>Alert cooldown <output id="outCooldown">5s</output></span>
+          <input type="range" id="setCooldown" min="2" max="20" step="1" value="5" />
+        </label>
+        <p class="settings-hint">Alert video: <code>assets/videos/alert.mp4</code> (bundled locally, no network required).</p>
+        <button id="btnTestVideo" class="btn btn-secondary" type="button">▶ Test Alert Video</button>
+      </section>
+
+      <section class="settings-group">
+        <h3>Camera</h3>
+        <label class="field-row">
+          <span>Camera device</span>
+          <select id="setCameraSelect" class="text-input"><option value="">Default camera</option></select>
+        </label>
+      </section>
+
+      <section class="settings-group">
+        <h3>Test Mode</h3>
+        <p class="settings-hint">Trigger the full alert workflow without real detection — useful for checking your video, audio and fullscreen behavior.</p>
+        <div class="test-btn-row">
+          <button id="btnTestPhone" class="btn btn-secondary" type="button">Test Phone Alert</button>
+          <button id="btnTestSleep" class="btn btn-secondary" type="button">Test Sleep Alert</button>
+        </div>
+      </section>
+
+      <section class="settings-group">
+        <button id="btnSaveSettings" class="btn btn-primary" type="button">Save Settings</button>
+      </section>
+    </div>
+  </aside>
+</div>
+
+<!-- ===================== HISTORY DRAWER ===================== -->
+<div id="historyOverlay" class="drawer-overlay hidden">
+  <aside class="drawer" role="dialog" aria-label="Session history" aria-modal="true">
+    <div class="drawer-header">
+      <h2>Session History</h2>
+      <button id="btnCloseHistory" class="btn btn-icon" type="button" aria-label="Close history">✕</button>
+    </div>
+    <div class="drawer-body">
+      <div id="historyList" class="history-list">
+        <p class="empty-state">No sessions recorded yet. Start a study session to see it here.</p>
+      </div>
+      <button id="btnClearHistory" class="btn btn-danger-outline">Clear History</button>
+    </div>
+  </aside>
+</div>
+
+<!-- ===================== ALERT OVERLAY ===================== -->
+<div id="alertOverlay" class="alert-overlay hidden" role="alertdialog" aria-label="Focus alert">
+  <video id="alertVideo" preload="auto" playsinline>
+    <source src="./assets/videos/alert.mp4" type="video/mp4">
+  </video>
+  <div class="alert-caption" id="alertCaption">Stay focused</div>
+  <p id="alertVideoError" class="alert-video-error hidden"></p>
+</div>
+
+<!-- ===================== TOAST ===================== -->
+<div id="toast" class="toast hidden"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
